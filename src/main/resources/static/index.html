@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>大文件上传 - 秒传 & 断点续传</title>
+</head>
+<body>
+<h1>大文件上传</h1>
+<input type="file" id="fileInput">
+<button id="uploadBtn">上传</button>
+<div id="progress"></div>
+
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script>
+    const CHUNK_SIZE = 5 * 1024 * 1024;
+
+    // 计算文件的 SHA-256 哈希
+    async function calculateSHA256(file) {
+        const buffer = await file.arrayBuffer();
+        const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    // 文件上传逻辑
+    async function uploadFile() {
+        const fileInput = document.getElementById("fileInput");
+        const file = fileInput.files[0];
+        if (!file) {
+            alert("请选择要上传的文件");
+            return;
+        }
+
+        const fileSign = await calculateSHA256(file);
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+        // 秒传检测
+        $.get(`/file/load-file-by-file-sign`, { fileSign: fileSign }, function (fileInfo) {
+            if (fileInfo) {
+                alert("文件已存在，秒传成功");
+                $("#progress").text("上传完成");
+                return;
+            } else {
+                $.get(`/file/list-uploaded-chunks`, { fileSign: fileSign }, function (uploadedChunks) {
+                    const uploadedChunkSet = new Set(uploadedChunks);
+                    uploadChunks(file, fileSign, totalChunks, uploadedChunkSet);
+                });
+            }
+        });
+    }
+
+    // 分片上传逻辑
+    function uploadChunks(file, fileSign, totalChunks, uploadedChunkSet) {
+        let chunkIndex = 0;
+
+        function uploadNextChunk() {
+            // 跳过已上传的分片
+            while (uploadedChunkSet.has(chunkIndex) && chunkIndex < totalChunks) {
+                chunkIndex++;
+            }
+
+            if (chunkIndex >= totalChunks) {
+                alert("上传完成");
+                $("#progress").text("上传完成");
+                return;
+            }
+
+            const start = chunkIndex * CHUNK_SIZE;
+            const end = Math.min(file.size, start + CHUNK_SIZE);
+            const chunk = file.slice(start, end);
+
+            const formData = new FormData();
+            formData.append("chunkFile", chunk); // 修改为匹配你的 Java 类
+            formData.append("fileSign", fileSign);
+            formData.append("fileName", file.name);
+            formData.append("fileSize", file.size); // 如果需要发送文件大小，可以添加这一行
+            formData.append("chunkSize", chunk.size); // 如果需要发送分片大小，也可以添加这一行
+            formData.append("chunkIndex", chunkIndex);
+            formData.append("chunkTotal", totalChunks); // 这个是正确的
+
+            $.ajax({
+                url: "/file/upload-chunk",
+                type: "POST",
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function (response) {
+                    $("#progress").text(`已上传分片 ${chunkIndex + 1} / ${totalChunks}`);
+                    uploadedChunkSet.add(chunkIndex);
+                    chunkIndex++;
+                    uploadNextChunk();
+                },
+                error: function () {
+                    alert("上传过程中发生错误");
+                }
+            });
+        }
+
+        uploadNextChunk();
+    }
+
+    $(document).ready(function () {
+        $("#uploadBtn").on("click", uploadFile);
+    });
+</script>
+</body>
+</html>
